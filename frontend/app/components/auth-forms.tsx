@@ -49,6 +49,7 @@ export function LoginForm() {
     const [notice, setNotice] = useState("");
 
     async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+        // console.log('Hello!');
         event.preventDefault();
         const next: Errors = {};
         if (!emailPattern.test(email.trim())) next.email = "Enter a valid email address.";
@@ -59,7 +60,7 @@ export function LoginForm() {
         // TODO(backend): POST { email, password, remember } over HTTPS; set an HttpOnly, Secure, SameSite session cookie.
         // Never store the password or session token in localStorage.
 
-        const res = await fetch("http://localhost:4000/api/login", {
+        const res = await fetch("/login", {
             method: "POST",
             headers: { "Content-Type": "application/json"},
             body: JSON.stringify({ email: email, password: password })
@@ -67,12 +68,14 @@ export function LoginForm() {
 
         const data = await res.json();
 
-        if(!res.ok){
-            alert(data.error);
-            return;
-        }
+        console.log(data);
 
-        console.log("Logged in as:", data.user);
+        // if(!res.ok){
+        //     alert(data.error);
+        //     return;
+        // }
+
+        // console.log("Logged in as:", data.user);
         // setNotice(BACKEND_PENDING);
     }
 
