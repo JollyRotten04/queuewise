@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useState } from "react";
 import { card, inputClass, labelClass, primaryButton } from "../lib/styles";
+import { useRouter } from "next/navigation";
 
 // Client-side checks are for user feedback only. The backend must validate everything again,
 // hash passwords, rate-limit attempts, and return generic errors (never "email not found").
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const usernamePattern = /^[A-Za-z0-9_]{3,30}$/;
 const MIN_PASSWORD_LENGTH = 8;
 
 type Errors = Record<string, string | undefined>;
@@ -60,7 +62,7 @@ export function LoginForm() {
         // TODO(backend): POST { email, password, remember } over HTTPS; set an HttpOnly, Secure, SameSite session cookie.
         // Never store the password or session token in localStorage.
 
-        const res = await fetch("/login", {
+        const res = await fetch("http://localhost:4000/api/login", {
             method: "POST",
             headers: { "Content-Type": "application/json"},
             body: JSON.stringify({ email: email, password: password })
@@ -68,14 +70,12 @@ export function LoginForm() {
 
         const data = await res.json();
 
-        console.log(data);
+        if(!res.ok){
+            alert(data.error);
+            return;
+        }
 
-        // if(!res.ok){
-        //     alert(data.error);
-        //     return;
-        // }
-
-        // console.log("Logged in as:", data.user);
+        console.log("Logged in as:", data.user);
         // setNotice(BACKEND_PENDING);
     }
 
@@ -106,11 +106,16 @@ export function LoginForm() {
     );
 }
 
+const initialSignupForm = { organization: "", firstName: "", lastName: "", username: "", email: "", password: "", confirm: "" };
+
 export function SignupForm() {
-    const [form, setForm] = useState({ organization: "", name: "", email: "", password: "", confirm: "" });
+    const [form, setForm] = useState(initialSignupForm);
     const [agree, setAgree] = useState(false);
     const [errors, setErrors] = useState<Errors>({});
     const [notice, setNotice] = useState("");
+    const [loading, setLoading] = useState(false);
+    const router = useRouter();
+    
 
     function set(field: keyof typeof form) {
         return (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -118,11 +123,13 @@ export function SignupForm() {
 
     const strength = [/.{12,}/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((r) => r.test(form.password)).length;
 
-    function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
         const next: Errors = {};
         if (form.organization.trim().length < 2) next.organization = "Enter your organization's name.";
-        if (form.name.trim().length < 2) next.name = "Enter your full name.";
+        if (form.firstName.trim().length < 2) next.firstName = "Enter your first name.";
+        if (form.lastName.trim().length < 2) next.lastName = "Enter your last name.";
+        if (!usernamePattern.test(form.username.trim())) next.username = "Use 3–30 letters, numbers, or underscores.";
         if (!emailPattern.test(form.email.trim())) next.email = "Enter a valid email address.";
         if (form.password.length < MIN_PASSWORD_LENGTH) next.password = `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
         if (form.confirm !== form.password) next.confirm = "Passwords don't match.";
@@ -130,8 +137,40 @@ export function SignupForm() {
         setErrors(next);
         if (Object.values(next).some(Boolean)) return;
 
-        // TODO(backend): POST the form over HTTPS. Do not send `confirm`; the server enforces the password policy.
-        // setNotice("Sign-up isn't connected yet. This form is ready for the backend.");
+        setNotice("Account created! Redirecting to login…");
+        setTimeout(() => router.push("/login"), 1500);
+        setLoading(true);
+
+        try {
+            const res = await fetch("http://localhost:4000/api/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    firstName: form.firstName.trim(),
+                    lastName: form.lastName.trim(),
+                    username: form.username.trim(),
+                    email: form.email.trim(),
+                    password: form.password,
+                    confirmPassword: form.confirm,
+                }),
+            });
+
+            const data = await res.json();
+
+            if (!res.ok) {
+                setNotice(data.error || "Something went wrong. Please try again.");
+                return;
+            }
+
+            // Don't store the token in localStorage. Move to HttpOnly cookies when you harden auth.
+            setForm(initialSignupForm);
+            setAgree(false);
+            setNotice("Account created! You can now log in.");
+        } catch {
+            setNotice("Couldn't reach the server. Please try again.");
+        } finally {
+            setLoading(false);
+        }
     }
 
     return (
@@ -141,8 +180,18 @@ export function SignupForm() {
             </Field>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Field id="name" label="Full name" error={errors.name}>
-                    <input id="name" type="text" autoComplete="name" maxLength={80} value={form.name} onChange={set("name")} className={inputClass} {...errorProps("name", errors.name)} />
+                <Field id="firstName" label="First name" error={errors.firstName}>
+                    <input id="firstName" type="text" autoComplete="given-name" maxLength={50} value={form.firstName} onChange={set("firstName")} className={inputClass} {...errorProps("firstName", errors.firstName)} />
+                </Field>
+
+                <Field id="lastName" label="Last name" error={errors.lastName}>
+                    <input id="lastName" type="text" autoComplete="family-name" maxLength={50} value={form.lastName} onChange={set("lastName")} className={inputClass} {...errorProps("lastName", errors.lastName)} />
+                </Field>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Field id="username" label="Username" error={errors.username}>
+                    <input id="username" type="text" autoComplete="username" maxLength={30} value={form.username} onChange={set("username")} className={inputClass} {...errorProps("username", errors.username)} />
                 </Field>
 
                 <Field id="email" label="Work email" error={errors.email}>
@@ -178,7 +227,9 @@ export function SignupForm() {
 
             <FormNotice message={notice} />
 
-            <button type="submit" className={`${primaryButton} w-full py-2.5 hover:scale-105`}>Create Account →</button>
+            <button type="submit" disabled={loading} className={`${primaryButton} w-full py-2.5 hover:scale-105 disabled:opacity-60 disabled:hover:scale-100 disabled:cursor-not-allowed`}>
+                {loading ? "Creating account…" : "Create Account →"}
+            </button>
         </form>
     );
 }
