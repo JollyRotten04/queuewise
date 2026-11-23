@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Header from "../components/header";
 import Footer from "../components/footer";
 import Badge from "../components/badge";
-import JoinForm from "../components/join-form";
-import CheckTicketForm from "../components/check-ticket-form";
-import { mockQueues, getService } from "../lib/mock-data";
+import JoinView from "../components/join-view";
 
 export const metadata: Metadata = {
   title: "Join a Queue",
@@ -31,34 +30,10 @@ export default function JoinPage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-            <div className="lg:col-span-2">
-              <JoinForm />
-            </div>
-
-            <aside className="flex flex-col gap-6">
-              <CheckTicketForm />
-
-              <div className="bg-white dark:bg-zinc-900 shadow-lg rounded-xl p-6 flex flex-col gap-4">
-                <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Current wait times</h2>
-
-                <ul className="flex flex-col gap-3">
-                  {mockQueues.map((queue) => {
-                    const service = getService(queue.serviceId);
-                    return (
-                      <li key={queue.serviceId} className="flex items-center justify-between gap-3">
-                        <div className="flex flex-col">
-                          <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{service.name}</span>
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">{queue.waiting} waiting · Now serving {queue.nowServing ?? "—"}</span>
-                        </div>
-                        <span className="text-sm font-bold text-violet-600 dark:text-violet-400 whitespace-nowrap">~{queue.avgWaitMinutes} min</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </aside>
-          </div>
+          {/* The branch comes from ?b=..., which is only known in the browser. */}
+          <Suspense fallback={<div className="h-96 rounded-xl bg-white dark:bg-zinc-900 shadow-lg animate-pulse" aria-hidden="true" />}>
+            <JoinView />
+          </Suspense>
 
         </div>
       </main>

@@ -1,11 +1,9 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import Link from "next/link";
 import Header from "../../components/header";
 import Footer from "../../components/footer";
-import TicketStatus from "../../components/ticket-status";
-import { isValidTicketNumber } from "../../lib/mock-data";
-import { primaryButton } from "../../lib/styles";
+import TicketStatus, { TicketNotFound } from "../../components/ticket-status";
+import { TICKET_NUMBER_PATTERN } from "../../lib/types";
 
 export const metadata: Metadata = {
   title: "My Ticket",
@@ -18,15 +16,8 @@ async function TicketContent({ params }: { params: PageProps<"/ticket/[id]">["pa
   const ticketNumber = decodeURIComponent(id).toUpperCase();
 
   // Rendered inline: the page shell is already streamed (partial prerender), so notFound() here would leave an empty slot.
-  if (!isValidTicketNumber(ticketNumber)) {
-    return (
-      <div className="bg-white dark:bg-zinc-900 shadow-lg rounded-xl p-8 flex flex-col items-center gap-3 text-center">
-        <p className="text-3xl" aria-hidden="true">🎫</p>
-        <p className="text-sm font-semibold text-black dark:text-zinc-50">We couldn&apos;t find that ticket</p>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">Ticket numbers look like G-024, D-011, or P-003.</p>
-        <Link href="/join#check-ticket" className={`${primaryButton} mt-2`}>Check Another Ticket</Link>
-      </div>
-    );
+  if (!TICKET_NUMBER_PATTERN.test(ticketNumber)) {
+    return <TicketNotFound />;
   }
 
   return <TicketStatus ticketNumber={ticketNumber} />;

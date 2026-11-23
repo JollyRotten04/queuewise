@@ -1,82 +1,115 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { inputClass, labelClass, primaryButton, card } from "../lib/styles";
-import { services, priorityLabels, getService, type PriorityCategory, type ServiceId } from "../lib/mock-data";
+import { ApiError, api, branchPath, errorMessage } from "../lib/api";
+import { priorityLabels, type BranchInfo, type Priority } from "../lib/types";
 
 type VisitMode = "walk-in" | "appointment";
+type Field = "serviceId" | "name" | "phone" | "date" | "time" | "consent" | "priority";
+type FormErrors = Partial<Record<Field, string>>;
 
-interface FormErrors {
-    name?: string;
-    phone?: string;
-    date?: string;
-    time?: string;
-    consent?: string;
-}
-
+// Same rules as the server; these are only for instant feedback. The API validates everything again.
 const namePattern = /^[\p{L}][\p{L} .'-]{1,59}$/u;
 const phonePattern = /^\+?[0-9][0-9 -]{6,14}$/;
 
-const timeSlots = Array.from({ length: 18 }, (_, i) => {
-    const totalMinutes = 8 * 60 + i * 30;
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    const value = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-    const label = `${((hours + 11) % 12) + 1}:${String(minutes).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
-    return { value, label };
-});
-
-function subscribeNoop() {
-    return () => {};
+function slotLabel(value: string) {
+    const [hours, minutes] = value.split(":").map(Number);
+    return `${((hours + 11) % 12) + 1}:${String(minutes).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
 }
 
-function toDateInputValue(date: Date) {
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+function addDays(day: string, days: number) {
+    const date = new Date(`${day}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
 }
 
-export default function JoinForm() {
+export default function JoinForm({ slug, info, onActiveTicket }: { slug: string; info: BranchInfo; onActiveTicket: () => void }) {
     const router = useRouter();
-    const [serviceId, setServiceId] = useState<ServiceId>("general");
+    const firstOpen = info.services.find((s) => s.isOpen) ?? info.services[0];
+    const [serviceId, setServiceId] = useState(firstOpen?.id ?? "");
     const [mode, setMode] = useState<VisitMode>("walk-in");
-    const [priority, setPriority] = useState<PriorityCategory>("none");
+    const [priority, setPriority] = useState<Priority>("none");
     const [name, setName] = useState("");
     const [phone, setPhone] = useState("");
     const [date, setDate] = useState("");
     const [time, setTime] = useState("");
     const [consent, setConsent] = useState(false);
     const [errors, setErrors] = useState<FormErrors>({});
+    const [formError, setFormError] = useState("");
     const [submitting, setSubmitting] = useState(false);
-    // Read on the client only so the page can be prerendered without reading the current time on the server.
-    const minDate = useSyncExternalStore(subscribeNoop, () => toDateInputValue(new Date()), () => undefined);
+
+    // Next.js keeps this page's state when you navigate away, and the browser's back-forward cache can restore it
+    // as it was. Clear the "Getting your ticket…" state whenever the page is hidden or restored, so Back never
+    // returns to a stuck button.
+    useEffect(() => {
+        function onPageShow(event: PageTransitionEvent) {
+            if (event.persisted) setSubmitting(false);
+        }
+        window.addEventListener("pageshow", onPageShow);
+        return () => {
+            window.removeEventListener("pageshow", onPageShow);
+            setSubmitting(false);
+        };
+    }, []);
+
+    const { today, maxDays, slots } = info.booking;
+    const maxDate = addDays(today, maxDays);
 
     function validate(): FormErrors {
         const next: FormErrors = {};
-        const trimmedName = name.trim();
-        if (!namePattern.test(trimmedName)) next.name = "Enter your name (2 to 60 letters).";
+        if (!serviceId) next.serviceId = "Choose a service.";
+        if (!namePattern.test(name.trim())) next.name = "Enter your name (2 to 60 letters).";
         if (phone.trim() && !phonePattern.test(phone.trim())) next.phone = "Enter a valid mobile number, or leave it blank.";
         if (mode === "appointment") {
             if (!date) next.date = "Choose a date.";
-            else if (minDate && date < minDate) next.date = "Choose today or a future date.";
+            else if (date < today || date > maxDate) next.date = `Choose a date within the next ${maxDays} days.`;
             if (!time) next.time = "Choose a time slot.";
         }
         if (!consent) next.consent = "Please agree so we can process your ticket.";
         return next;
     }
 
-    function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        setFormError("");
         const nextErrors = validate();
         setErrors(nextErrors);
         if (Object.keys(nextErrors).length > 0) return;
 
         setSubmitting(true);
-        // TODO(backend): POST { serviceId, mode, priority, name, phone, date, time } to the join-queue endpoint.
-        // The server must re-validate every field; the checks above are for user feedback only.
-        // Use the ticket number the server returns. This mock number is for the demo flow.
-        const prefix = priority !== "none" ? "P" : getService(serviceId).prefix;
-        const ticketNumber = `${prefix}-${String(Math.floor(Math.random() * 900) + 100)}`;
-        router.push(`/ticket/${ticketNumber}`);
+        try {
+            const ticket = await api<{ number: string; day: string }>(`${branchPath(slug)}/tickets`, {
+                method: "POST",
+                body: {
+                    serviceId,
+                    mode,
+                    priority,
+                    name: name.trim(),
+                    phone: phone.trim(),
+                    consent,
+                    ...(mode === "appointment" ? { date, time } : {}),
+                },
+            });
+            // Only the ticket number, branch and day go in the URL, never personal details.
+            const params = new URLSearchParams({ b: slug });
+            if (ticket.day !== today) params.set("d", ticket.day);
+            router.push(`/ticket/${ticket.number}?${params}`);
+        } catch (error) {
+            if (error instanceof ApiError && error.field === "activeTicket") {
+                // This browser already holds an active ticket; the parent swaps the form for a link to it.
+                setSubmitting(false);
+                onActiveTicket();
+                return;
+            }
+            if (error instanceof ApiError && error.field) {
+                setErrors({ [error.field as Field]: error.message });
+            } else {
+                setFormError(errorMessage(error));
+            }
+            setSubmitting(false);
+        }
     }
 
     return (
@@ -86,18 +119,19 @@ export default function JoinForm() {
                 <legend className="text-sm font-semibold text-black dark:text-zinc-50 mb-3">1. Choose a service</legend>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {services.map((service) => (
+                    {info.services.map((service) => (
                         <label
                             key={service.id}
-                            className={`flex flex-col gap-1 p-4 rounded-xl border cursor-pointer transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-violet-500 ${serviceId === service.id ? "border-violet-500 bg-violet-50 dark:bg-violet-500/10" : "border-zinc-200 dark:border-zinc-700 hover:border-violet-300"}`}
+                            className={`flex flex-col gap-1 p-4 rounded-xl border transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-violet-500 ${!service.isOpen ? "opacity-50 cursor-not-allowed border-zinc-200 dark:border-zinc-700" : serviceId === service.id ? "cursor-pointer border-violet-500 bg-violet-50 dark:bg-violet-500/10" : "cursor-pointer border-zinc-200 dark:border-zinc-700 hover:border-violet-300"}`}
                         >
-                            <input type="radio" name="service" value={service.id} checked={serviceId === service.id} onChange={() => setServiceId(service.id)} className="sr-only" />
+                            <input type="radio" name="service" value={service.id} checked={serviceId === service.id} disabled={!service.isOpen} onChange={() => setServiceId(service.id)} className="sr-only" />
                             <span className="text-violet-600 dark:text-violet-400 text-xl" aria-hidden="true">{service.icon}</span>
                             <span className="text-sm font-semibold text-black dark:text-zinc-50">{service.name}</span>
-                            <span className="text-xs text-zinc-500 dark:text-zinc-400">{service.description}</span>
+                            <span className="text-xs text-zinc-500 dark:text-zinc-400">{service.isOpen ? service.description : "Paused right now"}</span>
                         </label>
                     ))}
                 </div>
+                {errors.serviceId && <p className="text-xs text-red-600">{errors.serviceId}</p>}
             </fieldset>
 
             <fieldset className="flex flex-col gap-3">
@@ -116,7 +150,7 @@ export default function JoinForm() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="flex flex-col gap-1">
                             <label htmlFor="date" className={labelClass}>Date</label>
-                            <input id="date" type="date" min={minDate} value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} aria-invalid={!!errors.date} aria-describedby={errors.date ? "date-error" : undefined} />
+                            <input id="date" type="date" min={today} max={maxDate} value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} aria-invalid={!!errors.date} aria-describedby={errors.date ? "date-error" : undefined} />
                             {errors.date && <p id="date-error" className="text-xs text-red-600">{errors.date}</p>}
                         </div>
 
@@ -124,8 +158,8 @@ export default function JoinForm() {
                             <label htmlFor="time" className={labelClass}>Time slot</label>
                             <select id="time" value={time} onChange={(e) => setTime(e.target.value)} className={inputClass} aria-invalid={!!errors.time} aria-describedby={errors.time ? "time-error" : undefined}>
                                 <option value="">Select a time</option>
-                                {timeSlots.map((slot) => (
-                                    <option key={slot.value} value={slot.value}>{slot.label}</option>
+                                {slots.map((slot) => (
+                                    <option key={slot} value={slot}>{slotLabel(slot)}</option>
                                 ))}
                             </select>
                             {errors.time && <p id="time-error" className="text-xs text-red-600">{errors.time}</p>}
@@ -153,8 +187,8 @@ export default function JoinForm() {
 
                 <div className="flex flex-col gap-1">
                     <label htmlFor="priority" className={labelClass}>Priority lane</label>
-                    <select id="priority" value={priority} onChange={(e) => setPriority(e.target.value as PriorityCategory)} className={inputClass}>
-                        {(Object.keys(priorityLabels) as PriorityCategory[]).map((key) => (
+                    <select id="priority" value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className={inputClass}>
+                        {(Object.keys(priorityLabels) as Priority[]).map((key) => (
                             <option key={key} value={key}>{key === "none" ? "None (regular queue)" : priorityLabels[key]}</option>
                         ))}
                     </select>
@@ -171,6 +205,8 @@ export default function JoinForm() {
                 </label>
                 {errors.consent && <p id="consent-error" className="text-xs text-red-600">{errors.consent}</p>}
             </div>
+
+            {formError && <p role="alert" className="text-xs rounded-lg bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300 px-3 py-2">{formError}</p>}
 
             <button type="submit" disabled={submitting} className={`${primaryButton} w-full sm:w-fit sm:self-end px-6 py-2.5 hover:scale-105`}>
                 {submitting ? "Getting your ticket…" : mode === "walk-in" ? "Get My Ticket →" : "Book Appointment →"}

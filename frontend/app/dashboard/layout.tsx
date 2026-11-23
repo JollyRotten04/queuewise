@@ -3,15 +3,15 @@ import Image from "next/image";
 import Link from "next/link";
 import ThemeToggle from "../components/theme-toggle";
 import SidebarNav from "../components/dashboard/sidebar-nav";
+import StaffMenu from "../components/dashboard/staff-menu";
 
 export const metadata: Metadata = {
   title: { default: "Dashboard", template: "%s · QueueWise Dashboard" },
   robots: { index: false, follow: false },
 };
 
-// SECURITY: this layout does not protect anything by itself. Before real data is wired in, the backend must
-// require a signed-in staff session for /dashboard (proxy/middleware or a server-side session check here)
-// and authorize every API call by role and branch.
+// Access control: proxy.ts redirects visitors without a session cookie to /login, and every /api/staff call is
+// checked by the Express API (session + branch). This layout itself holds no data.
 export default function DashboardLayout({ children }: LayoutProps<"/dashboard">) {
   return (
     <div className="flex flex-col flex-1 w-full bg-zinc-50 dark:bg-zinc-950 font-sans">
@@ -25,17 +25,8 @@ export default function DashboardLayout({ children }: LayoutProps<"/dashboard">)
           </Link>
 
           <div className="flex items-center gap-3">
-            <div className="hidden sm:flex flex-col items-end">
-              <span className="text-xs font-semibold text-black dark:text-zinc-50">Front Desk</span>
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">Main Branch · Counter 2</span>
-            </div>
-
-            <Link href="/display" target="_blank" rel="noopener noreferrer" className="hidden sm:inline text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">Open Lobby Display ↗</Link>
-
+            <StaffMenu />
             <ThemeToggle />
-
-            {/* TODO(backend): replace with a POST sign-out action that clears the server session. */}
-            <Link href="/login" className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:text-violet-600 dark:hover:text-violet-400">Sign out</Link>
           </div>
         </div>
 
