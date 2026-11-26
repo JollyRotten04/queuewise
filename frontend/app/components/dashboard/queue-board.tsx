@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { card, dangerButton, inputClass, primaryButton, secondaryButton } from "../../lib/styles";
+import { card, dangerButton, primaryButton, secondaryButton } from "../../lib/styles";
 import { api, errorMessage, useLiveRefresh } from "../../lib/api";
 import { priorityLabels, type Overview, type StaffTicket } from "../../lib/types";
 import StatCard from "./stat-card";
@@ -44,17 +44,15 @@ function formatTime(iso: string) {
 export default function QueueBoard() {
     const redirectIfLoggedOut = useLoginRedirect();
     const [overview, setOverview] = useState<Overview | null>(null);
-    const [serviceFilter, setServiceFilter] = useState("");
     const [busy, setBusy] = useState(false);
     const [message, setMessage] = useState("Ready to serve.");
     const [error, setError] = useState("");
     const storedCounter = useSyncExternalStore(subscribeCounter, readCounter, () => 0);
 
-    // Counters on offer = open counters across open services (set on the Queues page). A counter that is still
-    // serving someone stays listed even if the count was lowered, so that visitor can be finished.
-    const openCounterTotal = (overview?.services ?? []).filter((s) => s.isOpen).reduce((sum, s) => sum + s.openCounters, 0);
+    // Counters on offer = the branch's open counters (set on the Queues page); each one serves every service.
+    // A counter still serving someone stays listed even if the count was lowered, so that visitor can be finished.
     const highestBusy = Math.max(0, ...(overview?.active ?? []).map((t) => t.counter ?? 0));
-    const counters = Array.from({ length: Math.min(Math.max(openCounterTotal, highestBusy), MAX_COUNTER) }, (_, i) => i + 1);
+    const counters = Array.from({ length: Math.min(Math.max(overview?.counterCount ?? 0, highestBusy), MAX_COUNTER) }, (_, i) => i + 1);
     const busyCounters = new Set((overview?.active ?? []).map((t) => t.counter));
     // Keep this device's choice if it still exists; otherwise start on the first vacant counter.
     const counter: number | null = counters.includes(storedCounter)
@@ -101,12 +99,15 @@ export default function QueueBoard() {
         // Remember the counter used, so the selection doesn't jump to "first vacant" once this one is busy.
         saveCounter(counter);
         return run(
-            () => api<StaffTicket>("/staff/call-next", { method: "POST", body: { counter, ...(serviceFilter ? { serviceId: serviceFilter } : {}) } }),
+            () => api<StaffTicket>("/staff/call-next", { method: "POST", body: { counter } }),
             (t) => `Called ${t.number} to Counter ${t.counter}.`,
         );
     };
     const act = (action: "recall" | "complete" | "no-show", describe: (t: StaffTicket) => string) =>
         current && run(() => api<StaffTicket>(`/staff/tickets/${current.id}/${action}`, { method: "POST", body: {} }), describe);
+    // Front-desk check-in for a booked visitor: puts them in the line (ahead of walk-ins once their time comes).
+    const checkIn = (ticket: StaffTicket) =>
+        run(() => api<StaffTicket>(`/staff/tickets/${ticket.id}/check-in`, { method: "POST", body: {} }), (t) => `${t.number} checked in and added to the line.`);
 
     if (!overview) {
         return error ? (
@@ -118,13 +119,13 @@ export default function QueueBoard() {
         );
     }
 
-    const { stats, waiting, services, branch } = overview;
+    const { stats, waiting, branch } = overview;
     const joinLink = `/join?${new URLSearchParams({ b: branch.slug })}`;
 
     return (
         <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <StatCard label="Waiting now" value={String(stats.waitingNow)} hint={stats.scheduledLater ? `+${stats.scheduledLater} booked later today` : "Across all services"} icon="⏱" />
+                <StatCard label="Waiting now" value={String(stats.waitingNow)} hint={stats.scheduledLater ? `+${stats.scheduledLater} booked, not checked in` : "Across all services"} icon="⏱" />
                 <StatCard label="Served today" value={String(stats.servedToday)} hint="Since opening" icon="✓" />
                 <StatCard label="Avg. wait" value={`${stats.avgWaitMinutes} min`} hint="Join to call" icon="🗠" />
                 <StatCard label="No-shows" value={String(stats.noShows)} hint="Missed their call" icon="✕" />
@@ -166,14 +167,6 @@ export default function QueueBoard() {
                         )}
                     </div>
 
-                    <label className="flex flex-col gap-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                        Call from
-                        <select value={serviceFilter} onChange={(e) => setServiceFilter(e.target.value)} className={inputClass}>
-                            <option value="">All services</option>
-                            {services.map((s) => <option key={s.id} value={s.id}>{s.name}{s.isOpen ? "" : " (paused)"}</option>)}
-                        </select>
-                    </label>
-
                     <div className="grid grid-cols-2 gap-3">
                         <button type="button" onClick={callNext} disabled={busy || counter === null || !!current || waiting.length === 0} className={`${primaryButton} col-span-2 py-2.5 hover:scale-105`}>
                             Call Next →
@@ -197,7 +190,7 @@ export default function QueueBoard() {
                     </div>
 
                     {waiting.length === 0 ? (
-                        <p className="text-sm text-zinc-500 dark:text-zinc-400 py-8 text-center">The queue is empty. 🎉</p>
+                        <p className="text-sm text-zinc-500 dark:text-zinc-400 py-8 text-center">The queue is empty.</p>
                     ) : (
                         <>
                             {/* Table on larger screens */}
@@ -242,7 +235,79 @@ export default function QueueBoard() {
                     )}
                 </section>
             </div>
+
+            <AppointmentList appointments={overview.appointments} window={overview.checkInWindow} busy={busy} onCheckIn={checkIn} />
         </>
+    );
+}
+
+function subscribeHalfMinute(callback: () => void) {
+    const timer = setInterval(callback, 30_000);
+    return () => clearInterval(timer);
+}
+
+// Current time, refreshed every 30 seconds (stable between renders, so it's safe to read during render).
+function useNow() {
+    return useSyncExternalStore(subscribeHalfMinute, () => Math.floor(Date.now() / 30_000) * 30_000, () => 0);
+}
+
+function AppointmentList({ appointments, window, busy, onCheckIn }: {
+    appointments: StaffTicket[];
+    window: Overview["checkInWindow"];
+    busy: boolean;
+    onCheckIn: (ticket: StaffTicket) => void;
+}) {
+    const now = useNow();
+
+    function state(ticket: StaffTicket) {
+        const at = new Date(ticket.scheduledFor ?? 0).getTime();
+        if (now < at - window.earlyMinutes * 60_000) return { label: "Upcoming", className: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300", icon: "◷" };
+        if (now <= at) return { label: "Check-in open", className: "bg-violet-200/80 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300", icon: "✓" };
+        return { label: "Running late", className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300", icon: "!" };
+    }
+
+    return (
+        <section className={`${card} p-6 flex flex-col gap-4`} aria-labelledby="appointments-title">
+            <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 id="appointments-title" className="text-sm font-semibold text-black dark:text-zinc-50">Appointments Today</h2>
+                    <span className="text-xs text-zinc-500">{appointments.length} not checked in</span>
+                </div>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    Booked visitors join the line when they check in ({window.earlyMinutes} min before to {window.lateMinutes} min after their time).
+                    Check them in here if they come to the desk. Bookings not checked in by then are released as no-shows.
+                </p>
+            </div>
+
+            {appointments.length === 0 ? (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 py-4 text-center">No more appointments waiting for check-in today.</p>
+            ) : (
+                <ul className="flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800">
+                    {appointments.map((ticket) => {
+                        const s = state(ticket);
+                        return (
+                            <li key={ticket.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
+                                <span className="w-16 text-sm font-bold text-black dark:text-zinc-50 tabular-nums">{formatTime(ticket.scheduledFor ?? ticket.queueAt)}</span>
+                                <div className="flex flex-col min-w-0 flex-1 basis-40">
+                                    <span className="text-sm font-semibold text-black dark:text-zinc-50">
+                                        {ticket.number} <span className="font-normal text-zinc-600 dark:text-zinc-400">· {ticket.customerName ?? "—"}</span>
+                                    </span>
+                                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                                        {ticket.service.name}{ticket.priority !== "none" && ` · ${priorityLabels[ticket.priority]}`}
+                                    </span>
+                                </div>
+                                <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg whitespace-nowrap ${s.className}`}>
+                                    <span aria-hidden="true">{s.icon}</span>{s.label}
+                                </span>
+                                <button type="button" onClick={() => onCheckIn(ticket)} disabled={busy} className={`${secondaryButton} hover:scale-105`}>
+                                    Check in
+                                </button>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
+        </section>
     );
 }
 

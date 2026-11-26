@@ -85,15 +85,19 @@ router.post("/:slug/tickets", rateLimit("join", { windowMs: 10 * MINUTE, max: 30
     }
 
     const ticket = await queue.createTicket(branch, details);
-
-    const lifetime = ticket.scheduledFor
-        ? Math.min(Math.ceil((ticket.scheduledFor.getTime() - Date.now()) / 1000) + DAY_SECONDS, 32 * DAY_SECONDS)
-        : DAY_SECONDS;
-    setCookie(res, TICKET_COOKIE, `${ticket.id}.${ticket.token}`, { maxAgeSeconds: lifetime, path: TICKET_COOKIE_PATH });
+    setTicketCookie(res, ticket);
 
     notifyBranch(branch.id);
     res.status(201).json({ number: ticket.number, day: ticket.day, scheduledFor: ticket.scheduledFor });
 });
+
+// Walk-ins: one day. Appointments: until a day after the booked time (capped).
+function setTicketCookie(res, ticket) {
+    const lifetime = ticket.scheduledFor
+        ? Math.min(Math.ceil((ticket.scheduledFor.getTime() - Date.now()) / 1000) + DAY_SECONDS, 32 * DAY_SECONDS)
+        : DAY_SECONDS;
+    setCookie(res, TICKET_COOKIE, `${ticket.id}.${ticket.token}`, { maxAgeSeconds: lifetime, path: TICKET_COOKIE_PATH });
+}
 
 // Lets the join page show "you already have a ticket" instead of the form.
 router.get("/:slug/my-ticket", readLimit, async (req, res) => {
@@ -109,12 +113,32 @@ router.get("/:slug/tickets/:number", readLimit, async (req, res) => {
     res.json(status);
 });
 
+// Appointment check-in by the visitor (ticket cookie), only inside the check-in window.
+router.post("/:slug/tickets/:number/check-in", rateLimit("check-in", { windowMs: 10 * MINUTE, max: 20 }), async (req, res) => {
+    await queue.checkInByOwner(req.publicBranch, ticketNumber(req.params.number), readTicketCookie(req));
+    notifyBranch(req.publicBranch.id);
+    res.json({ status: "waiting" });
+});
+
 router.post("/:slug/tickets/:number/cancel", rateLimit("cancel", { windowMs: 10 * MINUTE, max: 20 }), async (req, res) => {
     const cancelled = await queue.cancelTicket(req.publicBranch, ticketNumber(req.params.number), readTicketCookie(req));
     if (!cancelled) throw new HttpError(404, "This ticket can't be cancelled from this device.");
     clearCookie(res, TICKET_COOKIE, TICKET_COOKIE_PATH);
     notifyBranch(req.publicBranch.id);
     res.json({ status: "cancelled" });
+});
+
+// Move a booking (not yet checked in) to another date/time. Owner only; the old booking is released atomically.
+router.post("/:slug/tickets/:number/reschedule", rateLimit("reschedule", { windowMs: 10 * MINUTE, max: 10 }), async (req, res) => {
+    const input = v.body(req);
+    const slot = {
+        date: v.string(input.date, "date", { pattern: /^\d{4}-\d{2}-\d{2}$/, label: "Date" }),
+        time: v.oneOf(input.time, "time", queue.SLOT_TIMES),
+    };
+    const ticket = await queue.rescheduleAppointment(req.publicBranch, ticketNumber(req.params.number), readTicketCookie(req), slot);
+    setTicketCookie(res, ticket);
+    notifyBranch(req.publicBranch.id);
+    res.json({ number: ticket.number, day: ticket.day, scheduledFor: ticket.scheduledFor });
 });
 
 router.get("/:slug/display", readLimit, async (req, res) => {

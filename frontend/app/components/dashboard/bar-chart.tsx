@@ -55,7 +55,8 @@ export default function BarChart({ title, data, unit, orientation = "vertical" }
                             className="relative flex-1 h-full flex flex-col justify-end items-center outline-none group"
                         >
                             {active === i && (
-                                <div className="absolute bottom-full mb-1 z-10 whitespace-nowrap rounded-lg bg-black dark:bg-zinc-100 px-2 py-1 text-xs text-white dark:text-black shadow">
+                                // Near the edges the tooltip opens inward, so it never pokes past the screen.
+                                <div className={`absolute bottom-full mb-1 z-10 whitespace-nowrap rounded-lg bg-black dark:bg-zinc-100 px-2 py-1 text-xs text-white dark:text-black shadow ${i < data.length / 3 ? "left-0" : i >= (data.length * 2) / 3 ? "right-0" : "left-1/2 -translate-x-1/2"}`}>
                                     {d.label}: <span className="font-semibold">{d.value} {unit}</span>
                                 </div>
                             )}
@@ -87,8 +88,9 @@ export default function BarChart({ title, data, unit, orientation = "vertical" }
 
             {!showTable && orientation === "vertical" && (
                 <div className="flex gap-1 sm:gap-2 -mt-2" aria-hidden="true">
-                    {data.map((d) => (
-                        <span key={d.label} className="flex-1 text-center text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 whitespace-nowrap">{d.label.replace(" ", "")}</span>
+                    {data.map((d, i) => (
+                        // With many bars, show every other label on phones so they never crowd past the edge.
+                        <span key={d.label} className={`flex-1 min-w-0 text-center text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 whitespace-nowrap ${data.length > 8 && i % 2 === 1 ? "invisible sm:visible" : ""}`}>{d.label.replace(" ", "")}</span>
                     ))}
                 </div>
             )}

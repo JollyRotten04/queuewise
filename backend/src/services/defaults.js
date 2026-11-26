@@ -1,8 +1,9 @@
 // Services every new branch starts with. Admins can adjust counters and times from the dashboard.
+// Priority (seniors, PWDs, pregnant, urgent) is not a service: visitors pick it per ticket, those tickets get the
+// "P" prefix and are called first within their service.
 export const DEFAULT_SERVICES = [
     { code: "general", name: "General Consultation", description: "Walk-in and scheduled consultations", icon: "✚", prefix: "G", avgServiceMinutes: 6 },
     { code: "documents", name: "Document Processing", description: "Requests, releases, and certifications", icon: "🗎", prefix: "D", avgServiceMinutes: 9 },
-    { code: "priority", name: "Priority Lane", description: "Seniors, PWDs, pregnant, and urgent cases", icon: "☆", prefix: "P", avgServiceMinutes: 5 },
 ];
 
 export async function insertDefaultServices(client, branchId) {

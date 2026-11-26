@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { inputClass, labelClass, primaryButton, card } from "../lib/styles";
 import { ApiError, api, branchPath, errorMessage } from "../lib/api";
 import { priorityLabels, type BranchInfo, type Priority } from "../lib/types";
+import DatePicker from "./date-picker";
 
 type VisitMode = "walk-in" | "appointment";
 type Field = "serviceId" | "name" | "phone" | "date" | "time" | "consent" | "priority";
@@ -14,12 +15,12 @@ type FormErrors = Partial<Record<Field, string>>;
 const namePattern = /^[\p{L}][\p{L} .'-]{1,59}$/u;
 const phonePattern = /^\+?[0-9][0-9 -]{6,14}$/;
 
-function slotLabel(value: string) {
+export function slotLabel(value: string) {
     const [hours, minutes] = value.split(":").map(Number);
     return `${((hours + 11) % 12) + 1}:${String(minutes).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
 }
 
-function addDays(day: string, days: number) {
+export function addDays(day: string, days: number) {
     const date = new Date(`${day}T00:00:00Z`);
     date.setUTCDate(date.getUTCDate() + days);
     return date.toISOString().slice(0, 10);
@@ -118,7 +119,7 @@ export default function JoinForm({ slug, info, onActiveTicket }: { slug: string;
             <fieldset className="flex flex-col gap-3">
                 <legend className="text-sm font-semibold text-black dark:text-zinc-50 mb-3">1. Choose a service</legend>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className={`grid grid-cols-1 gap-3 ${info.services.length >= 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
                     {info.services.map((service) => (
                         <label
                             key={service.id}
@@ -150,7 +151,7 @@ export default function JoinForm({ slug, info, onActiveTicket }: { slug: string;
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="flex flex-col gap-1">
                             <label htmlFor="date" className={labelClass}>Date</label>
-                            <input id="date" type="date" min={today} max={maxDate} value={date} onChange={(e) => setDate(e.target.value)} className={inputClass} aria-invalid={!!errors.date} aria-describedby={errors.date ? "date-error" : undefined} />
+                            <DatePicker id="date" value={date} onChange={setDate} min={today} max={maxDate} invalid={!!errors.date} describedBy={errors.date ? "date-error" : undefined} />
                             {errors.date && <p id="date-error" className="text-xs text-red-600">{errors.date}</p>}
                         </div>
 
@@ -186,7 +187,7 @@ export default function JoinForm({ slug, info, onActiveTicket }: { slug: string;
                 </div>
 
                 <div className="flex flex-col gap-1">
-                    <label htmlFor="priority" className={labelClass}>Priority lane</label>
+                    <label htmlFor="priority" className={labelClass}>Priority lane <span className="font-normal text-zinc-400">(if eligible, you&apos;ll be called first)</span></label>
                     <select id="priority" value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className={inputClass}>
                         {(Object.keys(priorityLabels) as Priority[]).map((key) => (
                             <option key={key} value={key}>{key === "none" ? "None (regular queue)" : priorityLabels[key]}</option>

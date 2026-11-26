@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import JoinForm from "./join-form";
-import CheckTicketForm from "./check-ticket-form";
 import { api, branchPath, errorMessage, useBranchSlug, useLiveRefresh } from "../lib/api";
 import { primaryButton, card } from "../lib/styles";
 import type { ActiveTicket, BranchInfo } from "../lib/types";
@@ -88,8 +87,6 @@ export default function JoinView() {
             </div>
 
             <aside className="flex flex-col gap-6">
-                <CheckTicketForm slug={slug} />
-
                 <div className="bg-white dark:bg-zinc-900 shadow-lg rounded-xl p-6 flex flex-col gap-4">
                     <h2 className="text-sm font-semibold text-black dark:text-zinc-50">Current wait times</h2>
 

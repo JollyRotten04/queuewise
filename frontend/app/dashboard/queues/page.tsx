@@ -12,7 +12,7 @@ export default function QueuesPage() {
         <h1 className="text-2xl sm:text-3xl font-bold text-black dark:text-zinc-50">
           Manage <span className="text-violet-600 dark:text-violet-400">Queues</span>
         </h1>
-        <p className="text-sm text-zinc-700 dark:text-zinc-400">Open or pause service queues and adjust how many counters are serving each one.</p>
+        <p className="text-sm text-zinc-700 dark:text-zinc-400">Set how many counters are open, and pause or reopen services. Every counter serves every service.</p>
       </div>
 
       <QueueManager />

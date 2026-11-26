@@ -15,7 +15,7 @@ const footerLinks = [
         heading: "Visitors",
         links: [
             { label: "Join a Queue", href: "/join" },
-            { label: "Check My Ticket", href: "/join#check-ticket" },
+            { label: "My Ticket", href: "/join" },
             { label: "FAQ", href: "/#faq" },
         ],
     },

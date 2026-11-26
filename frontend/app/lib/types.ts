@@ -40,12 +40,15 @@ export interface TicketInfo {
     counter: number | null;
     recallCount: number;
     scheduledFor: string | null;
+    // Appointments only: when check-in opens/closes, whether it's open now, and when they checked in.
+    checkIn: { opensAt: string; closesAt: string; isOpen: boolean; checkedInAt: string | null } | null;
     isOwner: boolean;
 }
 
 export interface DisplayInfo {
     branch: { name: string };
-    services: { id: string; code: string; name: string; serving: { number: string; counter: number | null; calledAt: string } | null }[];
+    // One entry per open counter; every counter serves every service.
+    counters: { counter: number; serving: { number: string; calledAt: string } | null }[];
     upNext: string[];
 }
 
@@ -57,6 +60,8 @@ export interface StaffTicket {
     priority: Priority;
     status: TicketStatus;
     queueAt: string;
+    scheduledFor: string | null;
+    checkedInAt: string | null;
     counter: number | null;
     recallCount: number;
     calledAt: string | null;
@@ -76,7 +81,12 @@ export interface Overview {
     waiting: StaffTicket[];
     // Tickets being served right now, one per busy counter. canAct: this user may recall/complete it.
     active: (StaffTicket & { canAct: boolean })[];
-    services: { id: string; name: string; isOpen: boolean; openCounters: number }[];
+    // Today's bookings that haven't checked in yet (not in line).
+    appointments: StaffTicket[];
+    checkInWindow: { earlyMinutes: number; lateMinutes: number };
+    services: { id: string; name: string; isOpen: boolean }[];
+    // Counters open at this branch. Every counter serves every service.
+    counterCount: number;
     branch: { name: string; slug: string };
 }
 
@@ -87,7 +97,6 @@ export interface QueueService {
     icon: string;
     prefix: string;
     avgServiceMinutes: number;
-    openCounters: number;
     isOpen: boolean;
     waiting: number;
     nowServing: string | null;
@@ -96,6 +105,7 @@ export interface QueueService {
 
 export interface QueuesResponse {
     services: QueueService[];
+    counterCount: number;
     canManage: boolean;
     branch: { name: string; slug: string };
 }

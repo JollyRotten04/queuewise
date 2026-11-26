@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS services (
     icon                 text NOT NULL DEFAULT '•' CHECK (char_length(icon) <= 4),
     prefix               char(1) NOT NULL CHECK (prefix ~ '^[A-Z]$'),
     avg_service_minutes  int NOT NULL DEFAULT 6 CHECK (avg_service_minutes BETWEEN 1 AND 240),
-    open_counters        int NOT NULL DEFAULT 1 CHECK (open_counters BETWEEN 0 AND 50),
     is_open              boolean NOT NULL DEFAULT true,
     sort_order           int NOT NULL DEFAULT 0,
     UNIQUE (branch_id, code),
@@ -101,3 +100,56 @@ CREATE INDEX IF NOT EXISTS tickets_created_idx ON tickets (created_at);
 -- One staff member may run several counters, so this is per counter, not per user.
 DROP INDEX IF EXISTS tickets_one_active_call_idx;
 CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_call_per_counter_idx ON tickets (branch_id, day, counter) WHERE status = 'called';
+
+-- Data fix: the old "Priority Lane" service duplicated the per-ticket priority choice. Move any of its tickets to
+-- the branch's General Consultation service (keeping their numbers and priority), then remove it.
+-- Safe to run repeatedly; branches without a General service are left untouched.
+UPDATE tickets t SET service_id = g.id
+FROM services p
+JOIN services g ON g.branch_id = p.branch_id AND g.code = 'general'
+WHERE p.code = 'priority' AND t.service_id = p.id;
+
+DELETE FROM services p
+WHERE p.code = 'priority'
+  AND EXISTS (SELECT 1 FROM services g WHERE g.branch_id = p.branch_id AND g.code = 'general')
+  AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.service_id = p.id);
+
+-- Counters belong to the branch, not to a service: every counter serves every service from one shared line.
+-- First run only: add branches.counter_count, carrying over the sum of the old per-service open counters.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'branches' AND column_name = 'counter_count'
+    ) THEN
+        ALTER TABLE branches ADD COLUMN counter_count int NOT NULL DEFAULT 1 CHECK (counter_count BETWEEN 0 AND 99);
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'services' AND column_name = 'open_counters'
+        ) THEN
+            EXECUTE 'UPDATE branches b SET counter_count = LEAST(99, GREATEST(1, COALESCE(
+                (SELECT sum(s.open_counters) FROM services s WHERE s.branch_id = b.id AND s.is_open), 1)))';
+        END IF;
+    END IF;
+END $$;
+
+ALTER TABLE services DROP COLUMN IF EXISTS open_counters;
+
+-- Appointments join the line only once checked in (by the visitor within the check-in window, or by staff).
+-- First run only: add tickets.checked_in_at. Bookings already in line under the old rules (their time has passed)
+-- count as checked in, so they aren't expired as no-shows by the new rule.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'tickets' AND column_name = 'checked_in_at'
+    ) THEN
+        ALTER TABLE tickets ADD COLUMN checked_in_at timestamptz;
+        UPDATE tickets SET checked_in_at = scheduled_for
+        WHERE scheduled_for IS NOT NULL AND scheduled_for <= now() AND status IN ('waiting', 'called');
+    END IF;
+END $$;
+
+-- Finds bookings whose check-in window has passed (see jobs/maintenance.js).
+CREATE INDEX IF NOT EXISTS tickets_awaiting_checkin_idx ON tickets (scheduled_for)
+    WHERE status = 'waiting' AND scheduled_for IS NOT NULL AND checked_in_at IS NULL;

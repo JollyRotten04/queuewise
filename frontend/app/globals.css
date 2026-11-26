@@ -20,6 +20,12 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* No rubber-band bounce past the top/bottom edge (macOS trackpads, iOS, Android pull-to-refresh glow). */
+html,
+body {
+  overscroll-behavior: none;
+}
+
 html {
   scroll-behavior: smooth;
 }
