@@ -1,21 +1,22 @@
 // Background jobs:
-//   - every minute: expire appointments whose check-in window closed without a check-in (they become no-shows)
+//   - every minute: tell open pages when bookings reach their time (they join the line automatically)
 //   - every hour: delete expired sessions/reset links, and erase visitor personal data after the retention period
 import { config } from "../config.js";
 import { pool } from "../db/pool.js";
 import { notifyBranch } from "../lib/events.js";
-import { expireMissedCheckIns } from "../services/queue.js";
+import { branchesWithBookingsJustDue } from "../services/queue.js";
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 
-async function runCheckInExpiry() {
+async function runBookingsDue() {
     try {
-        const branchIds = await expireMissedCheckIns();
-        // Let open ticket pages and dashboards refresh.
+        // Look back a little over a minute so a slow tick doesn't skip anyone.
+        const branchIds = await branchesWithBookingsJustDue(75);
+        // Let open ticket pages and dashboards refresh so the booking shows up in line.
         for (const branchId of branchIds) notifyBranch(branchId);
     } catch (error) {
-        console.error("Check-in expiry job failed:", error.code ?? "", error.message);
+        console.error("Bookings-due job failed:", error.code ?? "", error.message);
     }
 }
 
@@ -38,8 +39,8 @@ async function runMaintenance() {
 }
 
 export function startMaintenance() {
-    runCheckInExpiry();
+    runBookingsDue();
     runMaintenance();
-    setInterval(runCheckInExpiry, MINUTE).unref();
+    setInterval(runBookingsDue, MINUTE).unref();
     setInterval(runMaintenance, HOUR).unref();
 }

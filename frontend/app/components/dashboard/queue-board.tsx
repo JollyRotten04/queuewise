@@ -41,6 +41,13 @@ function formatTime(iso: string) {
     return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+// Walk-ins: when they joined. Appointments: their booked time, marked when they checked in ahead of it.
+function joinedLabel(ticket: StaffTicket) {
+    if (!ticket.scheduledFor) return formatTime(ticket.queueAt);
+    const early = ticket.checkedInAt && new Date(ticket.checkedInAt) < new Date(ticket.scheduledFor);
+    return early ? `Early · booked ${formatTime(ticket.scheduledFor)}` : `Booked ${formatTime(ticket.scheduledFor)}`;
+}
+
 export default function QueueBoard() {
     const redirectIfLoggedOut = useLoginRedirect();
     const [overview, setOverview] = useState<Overview | null>(null);
@@ -105,9 +112,9 @@ export default function QueueBoard() {
     };
     const act = (action: "recall" | "complete" | "no-show", describe: (t: StaffTicket) => string) =>
         current && run(() => api<StaffTicket>(`/staff/tickets/${current.id}/${action}`, { method: "POST", body: {} }), describe);
-    // Front-desk check-in for a booked visitor: puts them in the line (ahead of walk-ins once their time comes).
+    // Early check-in for a booked visitor who arrived before their time: adds them to the line now.
     const checkIn = (ticket: StaffTicket) =>
-        run(() => api<StaffTicket>(`/staff/tickets/${ticket.id}/check-in`, { method: "POST", body: {} }), (t) => `${t.number} checked in and added to the line.`);
+        run(() => api<StaffTicket>(`/staff/tickets/${ticket.id}/check-in`, { method: "POST", body: {} }), (t) => `${t.number} checked in early and added to the line.`);
 
     if (!overview) {
         return error ? (
@@ -125,7 +132,7 @@ export default function QueueBoard() {
     return (
         <>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <StatCard label="Waiting now" value={String(stats.waitingNow)} hint={stats.scheduledLater ? `+${stats.scheduledLater} booked, not checked in` : "Across all services"} icon="⏱" />
+                <StatCard label="Waiting now" value={String(stats.waitingNow)} hint={stats.scheduledLater ? `+${stats.scheduledLater} booked later today` : "Across all services"} icon="⏱" />
                 <StatCard label="Served today" value={String(stats.servedToday)} hint="Since opening" icon="✓" />
                 <StatCard label="Avg. wait" value={`${stats.avgWaitMinutes} min`} hint="Join to call" icon="🗠" />
                 <StatCard label="No-shows" value={String(stats.noShows)} hint="Missed their call" icon="✕" />
@@ -202,7 +209,7 @@ export default function QueueBoard() {
                                             <th scope="col" className="py-2 pr-4 font-semibold">Name</th>
                                             <th scope="col" className="py-2 pr-4 font-semibold">Service</th>
                                             <th scope="col" className="py-2 pr-4 font-semibold">Lane</th>
-                                            <th scope="col" className="py-2 font-semibold text-right">In line since</th>
+                                            <th scope="col" className="py-2 font-semibold text-right">Joined</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -212,7 +219,7 @@ export default function QueueBoard() {
                                                 <td className="py-3 pr-4 text-zinc-700 dark:text-zinc-300">{ticket.customerName ?? "—"}</td>
                                                 <td className="py-3 pr-4 text-zinc-700 dark:text-zinc-300">{ticket.service.name}</td>
                                                 <td className="py-3 pr-4"><PriorityTag ticket={ticket} /></td>
-                                                <td className="py-3 text-right text-zinc-500 dark:text-zinc-400 tabular-nums">{formatTime(ticket.queueAt)}</td>
+                                                <td className="py-3 text-right text-zinc-500 dark:text-zinc-400 tabular-nums whitespace-nowrap">{joinedLabel(ticket)}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -224,7 +231,7 @@ export default function QueueBoard() {
                                 {waiting.map((ticket) => (
                                     <li key={ticket.id} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 dark:border-zinc-700 p-3">
                                         <div className="flex flex-col min-w-0">
-                                            <span className="text-sm font-bold text-black dark:text-zinc-50">{ticket.number} <span className="font-normal text-zinc-500">· {formatTime(ticket.queueAt)}</span></span>
+                                            <span className="text-sm font-bold text-black dark:text-zinc-50">{ticket.number} <span className="font-normal text-zinc-500">· {joinedLabel(ticket)}</span></span>
                                             <span className="text-xs text-zinc-600 dark:text-zinc-400 truncate">{ticket.customerName ?? "—"} · {ticket.service.name}</span>
                                         </div>
                                         <PriorityTag ticket={ticket} />
@@ -236,7 +243,7 @@ export default function QueueBoard() {
                 </section>
             </div>
 
-            <AppointmentList appointments={overview.appointments} window={overview.checkInWindow} busy={busy} onCheckIn={checkIn} />
+            <AppointmentList appointments={overview.appointments} window={overview.checkInWindow} lineIsEmpty={waiting.length === 0} busy={busy} onCheckIn={checkIn} />
         </>
     );
 }
@@ -251,9 +258,10 @@ function useNow() {
     return useSyncExternalStore(subscribeHalfMinute, () => Math.floor(Date.now() / 30_000) * 30_000, () => 0);
 }
 
-function AppointmentList({ appointments, window, busy, onCheckIn }: {
+function AppointmentList({ appointments, window, lineIsEmpty, busy, onCheckIn }: {
     appointments: StaffTicket[];
     window: Overview["checkInWindow"];
+    lineIsEmpty: boolean;
     busy: boolean;
     onCheckIn: (ticket: StaffTicket) => void;
 }) {
@@ -261,33 +269,38 @@ function AppointmentList({ appointments, window, busy, onCheckIn }: {
 
     function state(ticket: StaffTicket) {
         const at = new Date(ticket.scheduledFor ?? 0).getTime();
-        if (now < at - window.earlyMinutes * 60_000) return { label: "Upcoming", className: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300", icon: "◷" };
-        if (now <= at) return { label: "Check-in open", className: "bg-violet-200/80 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300", icon: "✓" };
-        return { label: "Running late", className: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300", icon: "!" };
+        if (now >= at - window.earlyMinutes * 60_000) return { label: "Due soon", className: "bg-violet-200/80 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300", icon: "◔" };
+        return { label: "Later today", className: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300", icon: "◷" };
     }
 
     return (
         <section className={`${card} p-6 flex flex-col gap-4`} aria-labelledby="appointments-title">
             <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between gap-3">
-                    <h2 id="appointments-title" className="text-sm font-semibold text-black dark:text-zinc-50">Appointments Today</h2>
-                    <span className="text-xs text-zinc-500">{appointments.length} not checked in</span>
+                    <h2 id="appointments-title" className="text-sm font-semibold text-black dark:text-zinc-50">Upcoming Appointments</h2>
+                    <span className="text-xs text-zinc-500">{appointments.length} later today</span>
                 </div>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Booked visitors join the line when they check in ({window.earlyMinutes} min before to {window.lateMinutes} min after their time).
-                    Check them in here if they come to the desk. Bookings not checked in by then are released as no-shows.
+                    Bookings join the line automatically at their time and are called ahead of walk-ins. If someone arrives early,
+                    Check in early adds them now, behind everyone already waiting, so they&apos;re served early only when the line is free.
                 </p>
             </div>
 
+            {appointments.length > 0 && lineIsEmpty && (
+                <p className="text-xs rounded-lg bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300 px-3 py-2">
+                    The line is empty, so an early arrival you check in now can be called right away.
+                </p>
+            )}
+
             {appointments.length === 0 ? (
-                <p className="text-sm text-zinc-500 dark:text-zinc-400 py-4 text-center">No more appointments waiting for check-in today.</p>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 py-4 text-center">No more upcoming appointments today.</p>
             ) : (
                 <ul className="flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800">
                     {appointments.map((ticket) => {
                         const s = state(ticket);
                         return (
                             <li key={ticket.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
-                                <span className="w-16 text-sm font-bold text-black dark:text-zinc-50 tabular-nums">{formatTime(ticket.scheduledFor ?? ticket.queueAt)}</span>
+                                <span className="w-20 shrink-0 whitespace-nowrap text-sm font-bold text-black dark:text-zinc-50 tabular-nums">{formatTime(ticket.scheduledFor ?? ticket.queueAt)}</span>
                                 <div className="flex flex-col min-w-0 flex-1 basis-40">
                                     <span className="text-sm font-semibold text-black dark:text-zinc-50">
                                         {ticket.number} <span className="font-normal text-zinc-600 dark:text-zinc-400">· {ticket.customerName ?? "—"}</span>
@@ -300,7 +313,7 @@ function AppointmentList({ appointments, window, busy, onCheckIn }: {
                                     <span aria-hidden="true">{s.icon}</span>{s.label}
                                 </span>
                                 <button type="button" onClick={() => onCheckIn(ticket)} disabled={busy} className={`${secondaryButton} hover:scale-105`}>
-                                    Check in
+                                    Check in early
                                 </button>
                             </li>
                         );

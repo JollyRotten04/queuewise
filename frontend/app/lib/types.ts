@@ -40,8 +40,8 @@ export interface TicketInfo {
     counter: number | null;
     recallCount: number;
     scheduledFor: string | null;
-    // Appointments only: when check-in opens/closes, whether it's open now, and when they checked in.
-    checkIn: { opensAt: string; closesAt: string; isOpen: boolean; checkedInAt: string | null } | null;
+    // Appointments only. They join the line by themselves at scheduledFor; early check-in is optional from opensAt.
+    checkIn: { opensAt: string; isOpen: boolean; checkedInAt: string | null } | null;
     isOwner: boolean;
 }
 
@@ -81,9 +81,9 @@ export interface Overview {
     waiting: StaffTicket[];
     // Tickets being served right now, one per busy counter. canAct: this user may recall/complete it.
     active: (StaffTicket & { canAct: boolean })[];
-    // Today's bookings that haven't checked in yet (not in line).
+    // Today's bookings whose time hasn't come yet and that haven't checked in early (not in line yet).
     appointments: StaffTicket[];
-    checkInWindow: { earlyMinutes: number; lateMinutes: number };
+    checkInWindow: { earlyMinutes: number };
     services: { id: string; name: string; isOpen: boolean }[];
     // Counters open at this branch. Every counter serves every service.
     counterCount: number;

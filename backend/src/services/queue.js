@@ -5,17 +5,17 @@ import { HttpError } from "../lib/errors.js";
 import { hashToken, newToken } from "../lib/tokens.js";
 
 // ---------- The line ----------
-// Walk-ins are in line as soon as they join. Appointments are in line only once checked in (by the visitor
-// during the check-in window, or by staff).
-const IN_LINE = "t.status = 'waiting' AND (t.scheduled_for IS NULL OR t.checked_in_at IS NOT NULL)";
-// Booked for today but not checked in yet, so not in line.
-const AWAITING_CHECK_IN = "t.status = 'waiting' AND t.scheduled_for IS NOT NULL AND t.checked_in_at IS NULL";
+// Walk-ins are in line as soon as they join. Appointments slide into the line automatically when their booked
+// time arrives, or earlier if they check in early (visitor or staff).
+const IN_LINE = "t.status = 'waiting' AND (t.scheduled_for IS NULL OR t.scheduled_for <= now() OR t.checked_in_at IS NOT NULL)";
+// Booked, time not reached yet, not checked in early: not in line yet.
+const UPCOMING = "t.status = 'waiting' AND t.scheduled_for > now() AND t.checked_in_at IS NULL";
 
 // Calling order:
 //   1. Priority lane (seniors, PWDs, pregnant, urgent).
-//   2. Checked-in appointments whose booked time has come, so they're served on time.
-//   3. Everyone else, longest waiting first. (An appointment that checked in early sits here until its time,
-//      so it can still be served early when counters are free.)
+//   2. Appointments whose booked time has come, so they're served on time.
+//   3. Everyone else, longest waiting first. An appointment that checked in early sits here, ordered by its
+//      booked time, so it's behind everyone already waiting: it's served early only when nobody else is in line.
 // queue_at is the join time for walk-ins and the booked time for appointments.
 const QUEUE_TIER = "CASE WHEN t.priority <> 'none' THEN 0 WHEN t.scheduled_for IS NOT NULL AND t.scheduled_for <= now() THEN 1 ELSE 2 END";
 const QUEUE_ORDER = `${QUEUE_TIER}, t.queue_at, t.created_at, t.id`;
@@ -32,9 +32,8 @@ export const MAX_BOOKING_DAYS = 30;
 export const SLOT_CAPACITY = 4;
 const MAX_TICKETS_PER_PREFIX_PER_DAY = 9999;
 
-// Appointment check-in window around the booked time. Missing it expires the booking as a no-show.
+// How early a visitor may check themselves in before their booked time. Staff can check in earlier.
 export const CHECK_IN_EARLY_MINUTES = 15;
-export const CHECK_IN_LATE_MINUTES = 15;
 
 export const MAX_COUNTERS = 99;
 
@@ -53,12 +52,8 @@ function timeIn(date, timezone) {
     return date.toLocaleTimeString("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" });
 }
 
-function checkInWindow(scheduledFor) {
-    const at = new Date(scheduledFor).getTime();
-    return {
-        opensAt: new Date(at - CHECK_IN_EARLY_MINUTES * 60_000),
-        closesAt: new Date(at + CHECK_IN_LATE_MINUTES * 60_000),
-    };
+function earlyCheckInOpensAt(scheduledFor) {
+    return new Date(new Date(scheduledFor).getTime() - CHECK_IN_EARLY_MINUTES * 60_000);
 }
 
 // All counters serve all services from one shared line, so a wait estimate is the total service time of everyone
@@ -199,7 +194,7 @@ export function rescheduleAppointment(branch, number, ownerCookie, { date, time 
             `SELECT id, service_id, customer_name, phone, priority, scheduled_for, access_token_hash
              FROM tickets
              WHERE id = $1 AND branch_id = $2 AND number = $3
-               AND status = 'waiting' AND scheduled_for IS NOT NULL AND checked_in_at IS NULL
+               AND status = 'waiting' AND scheduled_for > now() AND checked_in_at IS NULL
              FOR UPDATE`,
             [ownerCookie.id, branch.id, number],
         );
@@ -231,9 +226,11 @@ function ownsTicket(ownerCookie, ticket) {
     return presented.length === ticket.access_token_hash.length && timingSafeEqual(presented, ticket.access_token_hash);
 }
 
-// "scheduled" = a booking that hasn't checked in yet (not in line).
+// "scheduled" = a booking whose time hasn't come and that hasn't checked in early (not in line yet).
 function publicStatus(ticket) {
-    return ticket.status === "waiting" && ticket.scheduled_for && !ticket.checked_in_at ? "scheduled" : ticket.status;
+    const upcoming = ticket.status === "waiting" && ticket.scheduled_for && !ticket.checked_in_at
+        && new Date(ticket.scheduled_for).getTime() > Date.now();
+    return upcoming ? "scheduled" : ticket.status;
 }
 
 // The ticket this browser holds (from its ticket cookie) if it's still active: booked, in line, or called.
@@ -288,14 +285,13 @@ export async function getTicketStatus(branch, number, requestedDay, ownerCookie)
         minutesAhead = position.rows[0]?.minutes ?? 0;
     }
 
+    // Appointments: joins the line by itself at scheduledFor; early check-in is optional from opensAt.
     let checkIn = null;
     if (ticket.scheduled_for) {
-        const { opensAt, closesAt } = checkInWindow(ticket.scheduled_for);
-        const now = Date.now();
+        const opensAt = earlyCheckInOpensAt(ticket.scheduled_for);
         checkIn = {
             opensAt,
-            closesAt,
-            isOpen: status === "scheduled" && now >= opensAt.getTime() && now <= closesAt.getTime(),
+            isOpen: status === "scheduled" && Date.now() >= opensAt.getTime(),
             checkedInAt: ticket.checked_in_at,
         };
     }
@@ -317,7 +313,8 @@ export async function getTicketStatus(branch, number, requestedDay, ownerCookie)
     };
 }
 
-// Visitor checks in for their own appointment (proved by the ticket cookie), only inside the check-in window.
+// Visitor checks in early for their own appointment (proved by the ticket cookie). Optional: the booking joins
+// the line by itself at its time. Allowed from CHECK_IN_EARLY_MINUTES before.
 export async function checkInByOwner(branch, number, ownerCookie) {
     if (!ownerCookie) throw new HttpError(404, "This ticket can't be checked in from this device.");
     return withTransaction(async (client) => {
@@ -332,13 +329,11 @@ export async function checkInByOwner(branch, number, ownerCookie) {
         if (ticket.checked_in_at) throw new HttpError(409, "You're already checked in.");
         if (ticket.status !== "waiting") throw new HttpError(409, "This booking is no longer active. Please join the queue again.");
 
-        const { opensAt, closesAt } = checkInWindow(ticket.scheduled_for);
         const now = Date.now();
+        if (new Date(ticket.scheduled_for).getTime() <= now) throw new HttpError(409, "You're already in line: your appointment time has arrived.");
+        const opensAt = earlyCheckInOpensAt(ticket.scheduled_for);
         if (now < opensAt.getTime()) {
-            throw new HttpError(409, `Check-in opens at ${timeIn(opensAt, branch.timezone)}, ${CHECK_IN_EARLY_MINUTES} minutes before your appointment.`);
-        }
-        if (now > closesAt.getTime()) {
-            throw new HttpError(409, "Your check-in window has passed. Please see the staff or join the queue as a walk-in.");
+            throw new HttpError(409, `Early check-in opens at ${timeIn(opensAt, branch.timezone)}, ${CHECK_IN_EARLY_MINUTES} minutes before your appointment.`);
         }
 
         await client.query("UPDATE tickets SET checked_in_at = now() WHERE id = $1", [ticket.id]);
@@ -381,15 +376,15 @@ export async function getDisplay(branch) {
     };
 }
 
-// Bookings whose check-in window closed without a check-in become no-shows. Returns the affected branch ids.
-export async function expireMissedCheckIns() {
+// Branches with bookings whose time arrived recently, so open pages can refresh and show them in line.
+export async function branchesWithBookingsJustDue(sinceSeconds) {
     const { rows } = await pool.query(
-        `UPDATE tickets t SET status = 'no_show', finished_at = now()
-         WHERE ${AWAITING_CHECK_IN} AND t.scheduled_for + make_interval(mins => $1) < now()
-         RETURNING t.branch_id`,
-        [CHECK_IN_LATE_MINUTES],
+        `SELECT DISTINCT t.branch_id FROM tickets t
+         WHERE t.status = 'waiting' AND t.checked_in_at IS NULL
+           AND t.scheduled_for <= now() AND t.scheduled_for > now() - make_interval(secs => $1)`,
+        [sinceSeconds],
     );
-    return [...new Set(rows.map((r) => r.branch_id))];
+    return rows.map((r) => r.branch_id);
 }
 
 // ---------- Staff (always scoped to the signed-in user's branch) ----------
@@ -397,7 +392,7 @@ export async function expireMissedCheckIns() {
 async function todayStats(branch, today) {
     const { rows } = await pool.query(
         `SELECT count(*) FILTER (WHERE ${IN_LINE})::int AS waiting_now,
-                count(*) FILTER (WHERE ${AWAITING_CHECK_IN})::int AS scheduled_later,
+                count(*) FILTER (WHERE ${UPCOMING})::int AS scheduled_later,
                 count(*) FILTER (WHERE t.status = 'completed')::int AS served_today,
                 count(*) FILTER (WHERE t.status = 'no_show')::int AS no_shows,
                 count(*) FILTER (WHERE t.status = 'completed' AND t.priority <> 'none')::int AS priority_served,
@@ -454,10 +449,10 @@ export async function getOverview(user, branch) {
              ORDER BY t.counter`,
             [branch.id, today, user.id, user.role === "admin"],
         ),
-        // Today's bookings that haven't checked in yet, earliest first.
+        // Today's bookings that haven't reached their time (and haven't checked in early), earliest first.
         pool.query(
             `SELECT ${STAFF_TICKET_COLUMNS} FROM tickets t JOIN services s ON s.id = t.service_id
-             WHERE t.branch_id = $1 AND t.day = $2 AND ${AWAITING_CHECK_IN}
+             WHERE t.branch_id = $1 AND t.day = $2 AND ${UPCOMING}
              ORDER BY t.scheduled_for, t.created_at LIMIT 100`,
             [branch.id, today],
         ),
@@ -470,23 +465,23 @@ export async function getOverview(user, branch) {
         // Only the staff member who called a ticket (or an admin) can recall/complete it.
         active: active.rows.map((row) => ({ ...staffTicket(row), canAct: row.can_act })),
         appointments: appointments.rows.map(staffTicket),
-        checkInWindow: { earlyMinutes: CHECK_IN_EARLY_MINUTES, lateMinutes: CHECK_IN_LATE_MINUTES },
+        checkInWindow: { earlyMinutes: CHECK_IN_EARLY_MINUTES },
         services: services.rows.map((s) => ({ id: s.id, name: s.name, isOpen: s.is_open })),
         counterCount,
     };
 }
 
-// Staff check in a visitor who arrived at the desk. Allowed any time on the day (staff discretion), before expiry.
+// Staff check in a visitor who arrived early at the desk. Allowed any time on the day, before the booked time.
 export async function checkInByStaff(branch, ticketId) {
     const today = todayIn(branch.timezone);
     const { rows } = await pool.query(
         `UPDATE tickets t SET checked_in_at = now()
          FROM services s
-         WHERE t.id = $1 AND t.branch_id = $2 AND t.day = $3 AND ${AWAITING_CHECK_IN} AND s.id = t.service_id
+         WHERE t.id = $1 AND t.branch_id = $2 AND t.day = $3 AND ${UPCOMING} AND s.id = t.service_id
          RETURNING ${STAFF_TICKET_COLUMNS}`,
         [ticketId, branch.id, today],
     );
-    if (!rows[0]) throw new HttpError(404, "That booking isn't waiting for check-in today.");
+    if (!rows[0]) throw new HttpError(404, "That booking is already in line or no longer active.");
     return staffTicket(rows[0]);
 }
 

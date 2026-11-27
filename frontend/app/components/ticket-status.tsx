@@ -34,14 +34,15 @@ function clock(iso: string) {
     return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-// Booked visitors join the line by checking in during a window around their time.
-function CheckInPanel({ checkIn, isOwner, checkingIn, onCheckIn }: {
+// Booked visitors join the line by themselves at their time. Arriving early, they can check in to join sooner.
+function CheckInPanel({ checkIn, scheduledFor, isOwner, checkingIn, onCheckIn }: {
     checkIn: NonNullable<TicketInfo["checkIn"]>;
+    scheduledFor: string;
     isOwner: boolean;
     checkingIn: boolean;
     onCheckIn: () => void;
 }) {
-    const day = new Date(checkIn.opensAt).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    const day = new Date(scheduledFor).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 
     return (
         <div className={`${card} p-6 flex flex-col gap-4 border ${checkIn.isOpen ? "border-violet-400 dark:border-violet-500/60" : "border-transparent"}`}>
@@ -49,27 +50,27 @@ function CheckInPanel({ checkIn, isOwner, checkingIn, onCheckIn }: {
                 <span className="bg-violet-200/80 dark:bg-violet-500/20 text-violet-600 dark:text-violet-300 h-10 aspect-square flex items-center justify-center rounded-xl text-lg shrink-0" aria-hidden="true">✓</span>
                 <div className="flex flex-col gap-1">
                     <h2 className="text-sm font-semibold text-black dark:text-zinc-50">
-                        {checkIn.isOpen ? "Check-in is open" : "Check in when you arrive"}
+                        {checkIn.isOpen ? "Here early? You can check in now" : "You'll join the line automatically"}
                     </h2>
                     <p className="text-xs text-zinc-600 dark:text-zinc-400">
-                        Check-in window: <span className="font-semibold text-zinc-800 dark:text-zinc-200">{day}, {clock(checkIn.opensAt)} – {clock(checkIn.closesAt)}</span>.
-                        Once checked in, you&apos;ll be called close to your appointment time. If you don&apos;t check in by {clock(checkIn.closesAt)}, the booking is released.
+                        At <span className="font-semibold text-zinc-800 dark:text-zinc-200">{day}, {clock(scheduledFor)}</span> you join the line by yourself and are called ahead of walk-ins.
+                        Please be at the branch by then. If you arrive early, checking in adds you to the line now, so you may be served sooner when the counters are free.
                     </p>
                 </div>
             </div>
 
             {checkIn.isOpen && isOwner && (
                 <button type="button" onClick={onCheckIn} disabled={checkingIn} className={`${primaryButton} w-full py-3 text-sm hover:scale-105`}>
-                    {checkingIn ? "Checking in…" : "I'm Here — Check In"}
+                    {checkingIn ? "Checking in…" : "I'm Here Early — Check In"}
                 </button>
             )}
             {!checkIn.isOpen && isOwner && (
                 <p className="text-xs rounded-lg bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300 px-3 py-2">
-                    The check-in button appears here at {clock(checkIn.opensAt)}. Keep this page open or come back to it when you arrive.
+                    Arriving early? An early check-in button appears here at {clock(checkIn.opensAt)}. You don&apos;t need to do anything otherwise.
                 </p>
             )}
             {!isOwner && (
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">Check in from the phone that booked this ticket, or ask the front desk.</p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">Arriving early? Check in from the phone that booked this ticket, or ask the front desk.</p>
             )}
         </div>
     );
@@ -80,10 +81,7 @@ function statusMessage(ticket: TicketInfo) {
         case "scheduled":
             return `Appointment on ${new Date(ticket.scheduledFor ?? "").toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`;
         case "no_show":
-            // A booking that was never checked in expired; a called visitor who didn't come is a missed call.
-            return ticket.checkIn && !ticket.checkIn.checkedInAt
-                ? "You didn't check in during your window. Please join the queue again as a walk-in."
-                : "You missed your call. Please rejoin the queue.";
+            return "You missed your call. Please rejoin the queue.";
         case "waiting":
             return ticket.ahead === 0 ? "You're next! Please stay nearby." : `${ticket.ahead} ${ticket.ahead === 1 ? "person" : "people"} ahead of you`;
         case "called":
@@ -221,7 +219,7 @@ export default function TicketStatus({ ticketNumber }: { ticketNumber: string })
             </div>
 
             {ticket.status === "scheduled" && ticket.checkIn && (
-                <CheckInPanel checkIn={ticket.checkIn} isOwner={ticket.isOwner} checkingIn={checkingIn} onCheckIn={handleCheckIn} />
+                <CheckInPanel checkIn={ticket.checkIn} scheduledFor={ticket.scheduledFor ?? ticket.checkIn.opensAt} isOwner={ticket.isOwner} checkingIn={checkingIn} onCheckIn={handleCheckIn} />
             )}
 
             <div className={`${card} p-6`}>

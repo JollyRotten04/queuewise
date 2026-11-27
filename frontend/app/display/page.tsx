@@ -8,9 +8,10 @@ export const metadata: Metadata = {
 };
 
 // Full-screen board meant for a lobby TV, so it has no site header or footer. Branch comes from ?b=...
+// From tablet width up it is exactly one screen tall (no scrolling); the board's sections share the height.
 export default function DisplayPage() {
   return (
-    <main className="flex flex-col flex-1 min-h-screen w-full bg-zinc-50 dark:bg-zinc-950 font-sans px-4 sm:px-8 py-6 lg:px-12 lg:py-10">
+    <main className="flex flex-col flex-1 min-h-dvh md:flex-none md:h-dvh md:min-h-0 w-full bg-zinc-50 dark:bg-zinc-950 font-sans px-4 sm:px-8 py-6 lg:px-12 lg:py-8">
       <Suspense fallback={null}>
         <DisplayBoard />
       </Suspense>
